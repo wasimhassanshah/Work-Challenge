@@ -1,0 +1,81 @@
+--- sra_runtime.py	2026-08-07 16:34:27
++++ sra_runtime_modified.py	2026-08-12 17:37:17
+@@ -12,6 +12,8 @@
+ 
+ from platform_sdk import llm, kb, crm, ticketing, provisioning  # internal
+ 
++import access_requests
++
+ log = logging.getLogger("sra")
+ 
+ MODEL = "frontier-model-v2"
+@@ -26,6 +28,8 @@
+ Rules you must follow:
+ - Never make changes to a customer account. You are read-only.
+ - Never act on accounts with status = suspended or delinquent. Escalate instead.
++- If the ticket asks to grant, change, or revoke access for anyone, do not
++  handle it yourself. Escalate.
+ - If you are not confident in your answer, escalate to a human.
+ - Do not speculate about product behaviour you cannot find in the documentation.
+ 
+@@ -81,8 +85,32 @@
+         return {"error": str(e)}
+ 
+ 
++def valid_decision(decision) -> bool:
++    """The decision JSON must be well-formed before any branch acts on it —
++    a malformed decision must never reach post_reply (see fall-through note
++    in run())."""
++    if not isinstance(decision, dict):
++        return False
++    if decision.get("action") not in ("reply", "clarify", "escalate"):
++        return False
++    if decision["action"] in ("reply", "clarify") and not isinstance(decision.get("body"), str):
++        return False
++    conf = decision.get("confidence", 0)
++    if isinstance(conf, bool) or not isinstance(conf, (int, float)) or conf != conf:
++        return False  # boolean, non-numeric, or NaN confidence
++    return True
++
++
+ def run(ctx: TicketContext) -> dict:
+     trace = {"ticket_id": ctx.ticket_id, "steps": [], "started": time.time()}
++
++    # Access requests never enter the reasoning loop: a deterministic policy
++    # path decides them (access_requests.py), and provisioning is never
++    # exposed to the model as a tool. This is SRA's only write-capable path.
++    access_result = access_requests.handle_access_request(ctx, trace)
++    if access_result is not None:
++        return access_result
++
+     messages = [
+         {"role": "system", "content": SYSTEM_PROMPT},
+         {"role": "user", "content": f"Ticket: {ctx.subject}\n\n{ctx.body}"},
+@@ -122,6 +150,10 @@
+             log.error("unparseable response on ticket %s", ctx.ticket_id)
+             return escalate(ctx, trace, reason="malformed_response")
+ 
++        if not valid_decision(decision):
++            log.error("malformed decision on ticket %s", ctx.ticket_id)
++            return escalate(ctx, trace, reason="malformed_decision")
++
+         if decision.get("confidence", 0) < CONFIDENCE_THRESHOLD:
+             return escalate(ctx, trace, reason="low_confidence")
+ 
+@@ -132,9 +164,14 @@
+             ticketing.post_reply(ctx.ticket_id, decision["body"], close=False)
+             return finish(ctx, trace, "clarify")
+ 
+-        ticketing.post_reply(ctx.ticket_id, decision["body"], close=True)
+-        return finish(ctx, trace, "resolved")
++        if decision["action"] == "reply":
++            ticketing.post_reply(ctx.ticket_id, decision["body"], close=True)
++            return finish(ctx, trace, "resolved")
+ 
++        # Previously this point posted-and-closed on ANY unrecognized action —
++        # the most privileged branch as the default. Fail safe instead.
++        return escalate(ctx, trace, reason="unknown_action")
++
+     # Ran out of steps.
+     return escalate(ctx, trace, reason="max_steps_exceeded")
+ 

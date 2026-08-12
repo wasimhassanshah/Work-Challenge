@@ -1,0 +1,53 @@
+# Access-request policy — every policy tunable for the capability lives here
+# (phases, kill switch, module tiers, gates, limits, queues, customer-facing
+# reply templates).
+#
+# rollout_phase and granting_enabled are read fresh on every ticket, so a
+# flip takes effect without a deploy. All values are VALIDATED fail-closed at
+# load (load_policy_config): a typo in a phase or tier disables the write
+# path rather than promoting it.
+
+rollout_phase: shadow        # shadow | confirm | auto — anything else fails closed
+granting_enabled: false      # KILL SWITCH — false blocks every provisioning
+                             # write at the single choke point, in any phase.
+
+confirm_queue: tier1-access-approvals
+escalate_queue: tier2
+ledger_path: access_grants.jsonl   # deployment: point at the durable store
+
+extraction:
+  model: frontier-model-small      # cheap classify+extract; it never decides
+  max_ticket_chars: 6000
+
+policy:
+  admin_record_max_age_days: 90    # older/undated admin record => confirm, never auto
+  rate_limit_grants_per_window: 3
+  rate_limit_window_hours: 24
+  require_target_domain_match: true
+
+# Module allowlist. Anything NOT listed here escalates ("unknown").
+#   auto       — grants immediately (phase auto only, fresh admin record)
+#   confirm    — one-click human approval required
+#   never_auto — sensitive: human approval in every phase, permanently
+#
+# Launch posture: EVERY module starts at confirm (or never_auto). A module is
+# promoted to auto individually, in this file, only after shadow + confirm
+# data shows ZERO wrong would-be grants for it — per-module go-live, gated on
+# evidence, never on the calendar.
+module_tiers:
+  reports: confirm      # auto-eligible — promote after zero-misfire evidence
+  dashboards: confirm   # auto-eligible — promote after zero-misfire evidence
+  timesheets: confirm   # auto-eligible — promote after zero-misfire evidence
+  expenses: confirm
+  payroll: never_auto
+  finance: never_auto
+  admin: never_auto
+
+replies:
+  granted: |
+    Hi,
+
+    Access to the {module} module has been granted for {target_email}. It is
+    active now — they may need to sign out and back in to see it.
+
+    If anything looks wrong, reply here and we'll take another look.

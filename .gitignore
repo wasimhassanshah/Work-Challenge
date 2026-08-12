@@ -1,0 +1,14 @@
+# Personal working notes — NOT part of the submission, never push
+CLAUDE.md
+RWA-challenge.md
+findings.md
+loom.md
+submission.md
+part*_*.md
+notes/
+
+# junk / runtime artifacts
+.DS_Store
+*.zip
+__pycache__/
+access_grants.jsonl
